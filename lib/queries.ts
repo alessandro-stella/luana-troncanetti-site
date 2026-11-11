@@ -1,6 +1,13 @@
+import type { PopulateOptions } from "mongoose";
 import { dbConnect } from "@/lib/db";
 import { Article } from "@/models/Article";
 import { SiteSection } from "@/models/SiteSection";
+
+const RELATED_POPULATE: PopulateOptions = {
+  path: "related",
+  select: "title slug status section",
+  populate: { path: "section", select: "slug" },
+};
 
 // ---------- Sections ----------
 
@@ -36,6 +43,7 @@ export async function getArticleBySectionAndSlug(
     status: "published",
   })
     .populate("section")
+    .populate(RELATED_POPULATE)
     .lean();
 }
 

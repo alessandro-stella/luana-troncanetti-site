@@ -9,11 +9,14 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@vercel/firewall": "^1.2.6",
+    "dompurify": "^3.4.17",
     "mongoose": "^9.11.4",
     "next": "16.4.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "sanitize-html": "^2.18.1"
+    "sanitize-html": "^2.18.1",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",

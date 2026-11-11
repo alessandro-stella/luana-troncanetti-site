@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { cacheLife, cacheTag } from "next/cache";
-import Image from "next/image";
 import { getArticleBySectionAndSlug, getAllArticleParams } from "@/lib/queries";
+import ArticleView from "@/components/ArticleView";
 
 export const instant = false;
 
@@ -12,8 +12,20 @@ interface PageProps {
   }>;
 }
 
+type RelatedDoc = {
+  _id: { toString(): string };
+  title: string;
+  slug: string;
+  status: string;
+  section: { slug: string } | null;
+};
+
 export async function generateStaticParams() {
-  return getAllArticleParams();
+  const params = await getAllArticleParams();
+
+  return params.length > 0
+    ? params
+    : [{ section: "_placeholder", slug: "_placeholder" }];
 }
 
 export default async function ArticlePage({ params }: PageProps) {
@@ -21,7 +33,7 @@ export default async function ArticlePage({ params }: PageProps) {
 
   const { section, slug } = await params;
 
-  cacheLife("days");
+  cacheLife("max");
   cacheTag(`article:${section}/${slug}`);
 
   const article = await getArticleBySectionAndSlug(section, slug);
@@ -30,34 +42,24 @@ export default async function ArticlePage({ params }: PageProps) {
     notFound();
   }
 
-  return (
-    <article className="max-w-3xl mx-auto py-10">
-      <h1 className="text-4xl font-bold mb-4">{article.title}</h1>
+  const relatedDocs = (article.related ?? []) as unknown as RelatedDoc[];
 
-      <div className="mt-8 space-y-8">
-        {article.sections.map((sec, index) => (
-          <section key={index}>
-            {sec.subtitle && (
-              <h2 className="text-2xl font-semibold mb-2">{sec.subtitle}</h2>
-            )}
-            <div
-              className="prose"
-              dangerouslySetInnerHTML={{ __html: sec.body }}
-            />
-            {sec.image && (
-              <Image
-                src={sec.image.url}
-                alt={sec.image.alt || ""}
-                width={800}
-                height={450}
-                sizes="(min-width: 768px) 768px, 100vw"
-                priority={index === 0}
-                className="mt-4 rounded-lg h-auto w-full"
-              />
-            )}
-          </section>
-        ))}
-      </div>
-    </article>
+  if (relatedDocs.length > 0) {
+    cacheTag(...relatedDocs.map((r) => `ref:${r._id.toString()}`));
+  }
+
+  const related = relatedDocs
+    .filter((r) => r.status === "published" && r.section)
+    .map((r) => ({ title: r.title, href: `/${r.section!.slug}/${r.slug}` }));
+
+  return (
+    <div className="max-w-3xl mx-auto py-10">
+      <ArticleView
+        title={article.title}
+        subtitle={article.subtitle}
+        blocks={article.sections}
+        related={related}
+      />
+    </div>
   );
 }

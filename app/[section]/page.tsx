@@ -17,7 +17,10 @@ interface SectionPageProps {
 
 export async function generateStaticParams() {
   const sections = await getAllSections();
-  return sections.map((s) => ({ section: s.slug }));
+
+  return sections.length > 0
+    ? sections.map((s) => ({ section: s.slug }))
+    : [{ section: "_placeholder" }];
 }
 
 export default async function SectionPage({ params }: SectionPageProps) {

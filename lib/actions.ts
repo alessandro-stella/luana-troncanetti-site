@@ -1,11 +1,14 @@
 "use server";
 
 import { updateTag } from "next/cache";
+import { isObjectIdOrHexString, Types } from "mongoose";
 import { dbConnect } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { checkWriteAccess, endSession, loginWithPassword } from "@/lib/auth";
 import { sanitizeBody } from "@/lib/sanitize";
 import { Article } from "@/models/Article";
 import { SiteSection } from "@/models/SiteSection";
+
+// ---------- Types and constants ----------
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -19,11 +22,18 @@ type ArticleInput = {
   sectionSlug: string;
   slug: string;
   title: string;
+  subtitle?: string;
+  relatedIds?: string[];
   sections: ArticleSectionInput[];
 };
 
+type RelatedResult =
+  { ok: true; ids: Types.ObjectId[] } | { ok: false; error: string };
+
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RESERVED_SLUGS = new Set(["admin", "api", "_next"]);
+const MAX_RELATED = 10;
+const MAX_SUBTITLE = 300;
 
 function isDuplicateKey(e: unknown) {
   return (
@@ -33,16 +43,26 @@ function isDuplicateKey(e: unknown) {
   );
 }
 
-// =====================================================================
-// Section
-// =====================================================================
+// ---------- Session ----------
 
-export async function createSection(input: {
-  name: string;
-  slug: string;
-  description?: string;
-}): Promise<Result<{ id: string }>> {
-  await requireAdmin();
+export async function login(password: string): Promise<Result> {
+  const error = await loginWithPassword(password);
+  return error ? { ok: false, error } : { ok: true };
+}
+
+export async function logout(): Promise<Result> {
+  await endSession();
+  return { ok: true };
+}
+
+// ---------- Sections ----------
+
+export async function createSection(
+  password: string,
+  input: { name: string; slug: string; description?: string },
+): Promise<Result<{ id: string }>> {
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
 
   const name = input.name.trim();
   if (!name) return { ok: false, error: "Il nome è obbligatorio" };
@@ -72,10 +92,12 @@ export async function createSection(input: {
 }
 
 export async function updateSection(
+  password: string,
   id: string,
   input: { name: string; description?: string },
 ): Promise<Result> {
-  await requireAdmin();
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
 
   const name = input.name.trim();
   if (!name) return { ok: false, error: "Il nome è obbligatorio" };
@@ -94,8 +116,13 @@ export async function updateSection(
   return { ok: true };
 }
 
-export async function deleteSection(id: string): Promise<Result> {
-  await requireAdmin();
+export async function deleteSection(
+  password: string,
+  id: string,
+): Promise<Result> {
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
+
   await dbConnect();
 
   const section = await SiteSection.findById(id).lean();
@@ -117,9 +144,7 @@ export async function deleteSection(id: string): Promise<Result> {
   return { ok: true };
 }
 
-// =====================================================================
-// Articles
-// =====================================================================
+// ---------- Article helpers ----------
 
 function cleanSections(sections: ArticleSectionInput[]) {
   return sections.map((s) => ({ ...s, body: sanitizeBody(s.body) }));
@@ -128,7 +153,30 @@ function cleanSections(sections: ArticleSectionInput[]) {
 function validate(input: ArticleInput): string | null {
   if (!input.title.trim()) return "Il titolo è obbligatorio";
   if (!SLUG_RE.test(input.slug)) return "Slug non valido";
+  if ((input.subtitle ?? "").length > MAX_SUBTITLE) {
+    return `Il sottotitolo può avere al massimo ${MAX_SUBTITLE} caratteri`;
+  }
   return null;
+}
+
+async function resolveRelated(
+  ids: string[] = [],
+  selfId?: string,
+): Promise<RelatedResult> {
+  const unique = [...new Set(ids)].filter((id) => id !== selfId);
+
+  if (unique.length > MAX_RELATED) {
+    return { ok: false, error: `Massimo ${MAX_RELATED} articoli collegati` };
+  }
+  if (!unique.every((id) => isObjectIdOrHexString(id))) {
+    return { ok: false, error: "Riferimento a un articolo non valido" };
+  }
+
+  const found = await Article.find({ _id: { $in: unique } })
+    .select("_id")
+    .lean();
+
+  return { ok: true, ids: found.map((a) => a._id) };
 }
 
 async function findWithSection(id: string) {
@@ -137,15 +185,20 @@ async function findWithSection(id: string) {
     .lean();
 }
 
-function invalidateArticle(sectionSlug: string, slug: string) {
+function invalidateArticle(id: string, sectionSlug: string, slug: string) {
   updateTag(`article:${sectionSlug}/${slug}`);
   updateTag(`section:${sectionSlug}`);
+  updateTag(`ref:${id}`);
 }
 
+// ---------- Articles ----------
+
 export async function createArticle(
+  password: string,
   input: ArticleInput,
 ): Promise<Result<{ id: string }>> {
-  await requireAdmin();
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
 
   const error = validate(input);
   if (error) return { ok: false, error };
@@ -157,13 +210,18 @@ export async function createArticle(
     .lean();
   if (!section) return { ok: false, error: "Sezione inesistente" };
 
+  const related = await resolveRelated(input.relatedIds);
+  if (!related.ok) return related;
+
   try {
     const article = await Article.create({
       title: input.title.trim(),
+      subtitle: input.subtitle?.trim() ?? "",
       slug: input.slug,
       section: section._id,
       status: "draft",
       sections: cleanSections(input.sections),
+      related: related.ids,
     });
 
     return { ok: true, id: String(article._id) };
@@ -179,10 +237,12 @@ export async function createArticle(
 }
 
 export async function updateArticle(
+  password: string,
   id: string,
   input: ArticleInput,
 ): Promise<Result> {
-  await requireAdmin();
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
 
   const error = validate(input);
   if (error) return { ok: false, error };
@@ -197,15 +257,20 @@ export async function updateArticle(
     .lean();
   if (!newSection) return { ok: false, error: "Sezione inesistente" };
 
+  const related = await resolveRelated(input.relatedIds, id);
+  if (!related.ok) return related;
+
   try {
     await Article.updateOne(
       { _id: id },
       {
         $set: {
           title: input.title.trim(),
+          subtitle: input.subtitle?.trim() ?? "",
           slug: input.slug,
           section: newSection._id,
           sections: cleanSections(input.sections),
+          related: related.ids,
         },
       },
     );
@@ -220,15 +285,20 @@ export async function updateArticle(
   }
 
   if (existing.status === "published") {
-    invalidateArticle(existing.section.slug, existing.slug);
-    invalidateArticle(input.sectionSlug, input.slug);
+    invalidateArticle(id, existing.section.slug, existing.slug);
+    invalidateArticle(id, input.sectionSlug, input.slug);
   }
 
   return { ok: true };
 }
 
-export async function publishArticle(id: string): Promise<Result> {
-  await requireAdmin();
+export async function publishArticle(
+  password: string,
+  id: string,
+): Promise<Result> {
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
+
   await dbConnect();
 
   const article = await findWithSection(id);
@@ -244,13 +314,18 @@ export async function publishArticle(id: string): Promise<Result> {
     },
   );
 
-  invalidateArticle(article.section.slug, article.slug);
+  invalidateArticle(id, article.section.slug, article.slug);
 
   return { ok: true };
 }
 
-export async function unpublishArticle(id: string): Promise<Result> {
-  await requireAdmin();
+export async function unpublishArticle(
+  password: string,
+  id: string,
+): Promise<Result> {
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
+
   await dbConnect();
 
   const article = await findWithSection(id);
@@ -258,22 +333,33 @@ export async function unpublishArticle(id: string): Promise<Result> {
 
   await Article.updateOne({ _id: id }, { $set: { status: "draft" } });
 
-  invalidateArticle(article.section.slug, article.slug);
+  invalidateArticle(id, article.section.slug, article.slug);
 
   return { ok: true };
 }
 
-export async function deleteArticle(id: string): Promise<Result> {
-  await requireAdmin();
+export async function deleteArticle(
+  password: string,
+  id: string,
+): Promise<Result> {
+  const denied = await checkWriteAccess(password);
+  if (denied) return { ok: false, error: denied };
+
   await dbConnect();
 
   const article = await findWithSection(id);
   if (!article) return { ok: false, error: "Articolo non trovato" };
 
-  await Article.deleteOne({ _id: id });
+  const objectId = new Types.ObjectId(id);
+
+  await Article.deleteOne({ _id: objectId });
+  await Article.updateMany(
+    { related: objectId },
+    { $pull: { related: objectId } },
+  );
 
   if (article.status === "published") {
-    invalidateArticle(article.section.slug, article.slug);
+    invalidateArticle(id, article.section.slug, article.slug);
   }
 
   return { ok: true };

@@ -3,32 +3,40 @@
 import { updateTag } from "next/cache";
 import { isObjectIdOrHexString, Types } from "mongoose";
 import { dbConnect } from "@/lib/db";
-import { checkWriteAccess, endSession, loginWithPassword } from "@/lib/auth";
+import {
+  checkWriteAccess,
+  endSession,
+  hasValidSession,
+  loginWithPassword,
+} from "@/lib/auth";
 import { sanitizeBody } from "@/lib/sanitize";
+import { getArticleForEdit } from "@/lib/queries";
 import { Article } from "@/models/Article";
+import { Media } from "@/models/Media";
 import { SiteSection } from "@/models/SiteSection";
+import type { ArticleEditDto, ArticleInputDto } from "@/lib/types";
 
 // ---------- Types and constants ----------
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
-type ArticleSectionInput = {
-  subtitle?: string;
-  body: string;
-  image?: { url: string; alt?: string; width?: number; height?: number };
-};
+type ArticleInput = ArticleInputDto;
+type ArticleSectionInput = ArticleInputDto["sections"][number];
 
-type ArticleInput = {
-  sectionSlug: string;
-  slug: string;
-  title: string;
-  subtitle?: string;
-  relatedIds?: string[];
-  sections: ArticleSectionInput[];
-};
+type ResolvedSections =
+  | {
+      ok: true;
+      sections: {
+        subtitle?: string;
+        body: string;
+        image?: { url: string; alt: string; width: number; height: number };
+      }[];
+    }
+  | { ok: false; error: string };
 
 type RelatedResult =
-  { ok: true; ids: Types.ObjectId[] } | { ok: false; error: string };
+  | { ok: true; ids: Types.ObjectId[] }
+  | { ok: false; error: string };
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RESERVED_SLUGS = new Set(["admin", "api", "_next"]);
@@ -41,6 +49,10 @@ function isDuplicateKey(e: unknown) {
     e !== null &&
     (e as { code?: number }).code === 11000
   );
+}
+
+function isValidationError(e: unknown): e is Error {
+  return e instanceof Error && e.name === "ValidationError";
 }
 
 // ---------- Session ----------
@@ -146,17 +158,63 @@ export async function deleteSection(
 
 // ---------- Article helpers ----------
 
-function cleanSections(sections: ArticleSectionInput[]) {
-  return sections.map((s) => ({ ...s, body: sanitizeBody(s.body) }));
-}
-
 function validate(input: ArticleInput): string | null {
   if (!input.title.trim()) return "Il titolo è obbligatorio";
   if (!SLUG_RE.test(input.slug)) return "Slug non valido";
   if ((input.subtitle ?? "").length > MAX_SUBTITLE) {
     return `Il sottotitolo può avere al massimo ${MAX_SUBTITLE} caratteri`;
   }
+  if (!Array.isArray(input.sections) || input.sections.length === 0) {
+    return "Serve almeno un blocco di testo";
+  }
+  if (input.sections.some((s) => !s.body.trim())) {
+    return "Ogni blocco deve avere un testo";
+  }
   return null;
+}
+
+async function resolveSections(
+  sections: ArticleSectionInput[],
+): Promise<ResolvedSections> {
+  const urls = [
+    ...new Set(sections.flatMap((s) => (s.image?.url ? [s.image.url] : []))),
+  ];
+
+  const found =
+    urls.length > 0
+      ? await Media.find({ url: { $in: urls } })
+          .select("url width height")
+          .lean()
+      : [];
+  const byUrl = new Map(found.map((m) => [m.url, m]));
+
+  if (urls.some((url) => !byUrl.has(url))) {
+    return {
+      ok: false,
+      error:
+        "Un'immagine non è presente in galleria: caricala o scegline una esistente",
+    };
+  }
+
+  return {
+    ok: true,
+    sections: sections.map((s) => {
+      const media = s.image ? byUrl.get(s.image.url) : undefined;
+      return {
+        subtitle: s.subtitle,
+        body: sanitizeBody(s.body),
+        image:
+          s.image && media
+            ? {
+                url: media.url,
+                alt: s.image.alt ?? "",
+                width: media.width,
+                height: media.height,
+              }
+            : undefined,
+      };
+    }),
+  };
 }
 
 async function resolveRelated(
@@ -193,6 +251,19 @@ function invalidateArticle(id: string, sectionSlug: string, slug: string) {
 
 // ---------- Articles ----------
 
+export async function loadArticleForEdit(
+  id: string,
+): Promise<Result<{ article: ArticleEditDto }>> {
+  if (!(await hasValidSession())) {
+    return { ok: false, error: "Sessione scaduta: effettua di nuovo l'accesso" };
+  }
+
+  const article = await getArticleForEdit(id);
+  if (!article) return { ok: false, error: "Articolo non trovato" };
+
+  return { ok: true, article };
+}
+
 export async function createArticle(
   password: string,
   input: ArticleInput,
@@ -210,6 +281,9 @@ export async function createArticle(
     .lean();
   if (!section) return { ok: false, error: "Sezione inesistente" };
 
+  const resolved = await resolveSections(input.sections);
+  if (!resolved.ok) return resolved;
+
   const related = await resolveRelated(input.relatedIds);
   if (!related.ok) return related;
 
@@ -220,7 +294,7 @@ export async function createArticle(
       slug: input.slug,
       section: section._id,
       status: "draft",
-      sections: cleanSections(input.sections),
+      sections: resolved.sections,
       related: related.ids,
     });
 
@@ -232,6 +306,7 @@ export async function createArticle(
         error: "Esiste già un articolo con questo slug in questa sezione",
       };
     }
+    if (isValidationError(e)) return { ok: false, error: e.message };
     throw e;
   }
 }
@@ -247,6 +322,10 @@ export async function updateArticle(
   const error = validate(input);
   if (error) return { ok: false, error };
 
+  if (!isObjectIdOrHexString(id)) {
+    return { ok: false, error: "Articolo non trovato" };
+  }
+
   await dbConnect();
 
   const existing = await findWithSection(id);
@@ -256,6 +335,9 @@ export async function updateArticle(
     .select("_id")
     .lean();
   if (!newSection) return { ok: false, error: "Sezione inesistente" };
+
+  const resolved = await resolveSections(input.sections);
+  if (!resolved.ok) return resolved;
 
   const related = await resolveRelated(input.relatedIds, id);
   if (!related.ok) return related;
@@ -269,10 +351,11 @@ export async function updateArticle(
           subtitle: input.subtitle?.trim() ?? "",
           slug: input.slug,
           section: newSection._id,
-          sections: cleanSections(input.sections),
+          sections: resolved.sections,
           related: related.ids,
         },
       },
+      { runValidators: true },
     );
   } catch (e) {
     if (isDuplicateKey(e)) {
@@ -281,6 +364,7 @@ export async function updateArticle(
         error: "Esiste già un articolo con questo slug in questa sezione",
       };
     }
+    if (isValidationError(e)) return { ok: false, error: e.message };
     throw e;
   }
 

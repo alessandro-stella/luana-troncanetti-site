@@ -43,7 +43,7 @@ async function AdminGate() {
 
 export default function AdminPage() {
   return (
-    <main className="max-w-4xl mx-auto py-10 px-4">
+    <main className="max-w-7xl mx-auto py-10 px-4">
       <Suspense fallback={<p className="text-gray-500">Caricamento…</p>}>
         <AdminGate />
       </Suspense>

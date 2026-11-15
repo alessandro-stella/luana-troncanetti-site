@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { logout } from "@/lib/actions";
 import { useSessionDraft } from "./useSessionDraft";
+import { usePendingFiles } from "./usePendingFiles";
 import SectionsTab from "./SectionsTab";
-import ArticlesTab from "./ArticlesTab";
+import NewArticleTab from "./NewArticleTab";
+import GalleryTab from "./GalleryTab";
+import EditArticlesTab from "./EditArticlesTab";
 import {
   DRAFT_KEY,
   EMPTY_DRAFT,
@@ -13,6 +16,7 @@ import {
   UI_KEY,
   btnGhostCls,
   inputCls,
+  isDirty,
   type ActionResult,
   type ArticleItem,
   type Draft,
@@ -23,7 +27,9 @@ import {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "sections", label: "Sezioni" },
-  { id: "articles", label: "Articoli" },
+  { id: "new", label: "Nuovo articolo" },
+  { id: "media", label: "Galleria" },
+  { id: "edit", label: "Modifica articoli" },
 ];
 
 export default function AdminPanel({
@@ -36,10 +42,13 @@ export default function AdminPanel({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [password, setPassword] = useState("");
+  const [visited, setVisited] = useState<Tab[]>([]);
   const [message, setMessage] = useState<{
     type: "ok" | "error";
     text: string;
   } | null>(null);
+
+  const files = usePendingFiles();
 
   const {
     value: draft,
@@ -53,7 +62,9 @@ export default function AdminPanel({
   } = useSessionDraft<UiState>(UI_KEY, EMPTY_UI);
 
   const ready = draftReady && uiReady;
-  const dirty = ready && JSON.stringify(draft) !== JSON.stringify(EMPTY_DRAFT);
+  const dirty = ready && isDirty(draft);
+
+  // ---------- Effects ----------
 
   useEffect(() => {
     if (!dirty) return;
@@ -65,14 +76,24 @@ export default function AdminPanel({
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
 
+  useEffect(() => () => files.releaseAll(), [files]);
+
+  // ---------- Helpers ----------
+
+  const notify = (type: "ok" | "error", text: string) => {
+    setMessage({ type, text });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   function selectTab(tab: Tab) {
     setMessage(null);
+    setVisited((v) => (v.includes(tab) ? v : [...v, tab]));
     setUi({ tab });
   }
 
   function requirePassword() {
     if (password) return true;
-    setMessage({ type: "error", text: "Inserisci la password di conferma" });
+    notify("error", "Inserisci la password di conferma");
     return false;
   }
 
@@ -86,14 +107,14 @@ export default function AdminPanel({
       try {
         const res = await task();
         if (!res.ok) {
-          setMessage({ type: "error", text: res.error });
+          notify("error", res.error);
           return;
         }
         onSuccess?.();
-        setMessage({ type: "ok", text: successText });
+        notify("ok", successText);
         router.refresh();
       } catch {
-        setMessage({ type: "error", text: "Errore imprevisto" });
+        notify("error", "Errore imprevisto");
       }
     });
   }
@@ -102,13 +123,14 @@ export default function AdminPanel({
     if (
       dirty &&
       !confirm(
-        "Hai una bozza non salvata: uscendo verrà cancellata. Continuare?",
+        "Hai modifiche non salvate: uscendo verranno cancellate. Continuare?",
       )
     ) {
       return;
     }
     startTransition(async () => {
       await logout();
+      files.releaseAll();
       setDraft(EMPTY_DRAFT);
       setPassword("");
       router.refresh();
@@ -117,7 +139,27 @@ export default function AdminPanel({
 
   if (!ready) return <p className="text-gray-500">Caricamento…</p>;
 
-  const tabProps = { draft, setDraft, pending, password, requirePassword, run };
+  const tabProps = {
+    draft,
+    setDraft,
+    pending,
+    password,
+    requirePassword,
+    notify,
+    files,
+    run,
+  };
+
+  const panes: Record<Tab, ReactNode> = {
+    sections: <SectionsTab {...tabProps} sections={sections} />,
+    new: <NewArticleTab {...tabProps} sections={sections} articles={articles} />,
+    media: <GalleryTab password={password} />,
+    edit: (
+      <EditArticlesTab {...tabProps} sections={sections} articles={articles} />
+    ),
+  };
+
+  // ---------- Render ----------
 
   return (
     <div className="space-y-8">
@@ -156,12 +198,12 @@ export default function AdminPanel({
 
       {dirty && (
         <p className="text-sm text-amber-600">
-          Bozza locale salvata in questa scheda: sopravvive al reload, non alla
-          chiusura.
+          Le bozze di testo restano in questa scheda dopo il reload, non dopo la
+          chiusura. Le immagini scelte dal computer non sopravvivono al reload.
         </p>
       )}
 
-      <nav className="flex gap-2 border-b" role="tablist">
+      <nav className="flex flex-wrap gap-2 border-b" role="tablist">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -180,10 +222,12 @@ export default function AdminPanel({
         ))}
       </nav>
 
-      {ui.tab === "sections" ? (
-        <SectionsTab {...tabProps} sections={sections} />
-      ) : (
-        <ArticlesTab {...tabProps} sections={sections} articles={articles} />
+      {TABS.map(({ id }) =>
+        ui.tab === id || visited.includes(id) ? (
+          <div key={id} role="tabpanel" hidden={ui.tab !== id}>
+            {panes[id]}
+          </div>
+        ) : null,
       )}
     </div>
   );

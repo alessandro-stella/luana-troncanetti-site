@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { optimizeHtmlImages } from "@/lib/media-shared";
 
 export type ArticleViewBlock = {
   subtitle?: string;
@@ -34,8 +35,10 @@ export default function ArticleView({
               <h2 className="text-2xl font-semibold mb-2">{block.subtitle}</h2>
             )}
             <div
-              className="prose"
-              dangerouslySetInnerHTML={{ __html: block.body }}
+              className="prose max-w-none [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded-lg"
+              dangerouslySetInnerHTML={{
+                __html: optimizeHtmlImages(block.body),
+              }}
             />
             {block.image &&
               (preview ? (

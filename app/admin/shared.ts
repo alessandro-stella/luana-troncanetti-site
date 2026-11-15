@@ -1,4 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
+import type { ArticleEditDto } from "@/lib/types";
+import type { PendingFiles } from "./usePendingFiles";
 
 // ---------- Types ----------
 
@@ -20,19 +22,28 @@ export type Block = {
   imageAlt: string;
 };
 
-export type Draft = {
-  section: { name: string; slug: string; description: string };
-  article: {
-    sectionSlug: string;
-    slug: string;
-    title: string;
-    subtitle: string;
-    blocks: Block[];
-    relatedIds: string[];
-  };
+export type ArticleForm = {
+  sectionSlug: string;
+  slug: string;
+  title: string;
+  subtitle: string;
+  blocks: Block[];
+  relatedIds: string[];
 };
 
-export type Tab = "sections" | "articles";
+export type EditState = {
+  id: string | null;
+  baseline: string;
+  form: ArticleForm;
+};
+
+export type Draft = {
+  section: { name: string; slug: string; description: string };
+  article: ArticleForm;
+  edit: EditState;
+};
+
+export type Tab = "sections" | "new" | "media" | "edit";
 export type UiState = { tab: Tab };
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -43,6 +54,8 @@ export type TabProps = {
   pending: boolean;
   password: string;
   requirePassword: () => boolean;
+  notify: (type: "ok" | "error", text: string) => void;
+  files: PendingFiles;
   run: (
     task: () => Promise<ActionResult>,
     successText: string,
@@ -59,22 +72,55 @@ export const EMPTY_BLOCK: Block = {
   imageAlt: "",
 };
 
-export const EMPTY_DRAFT: Draft = {
-  section: { name: "", slug: "", description: "" },
-  article: {
-    sectionSlug: "",
-    slug: "",
-    title: "",
-    subtitle: "",
-    blocks: [EMPTY_BLOCK],
-    relatedIds: [],
-  },
+export const EMPTY_FORM: ArticleForm = {
+  sectionSlug: "",
+  slug: "",
+  title: "",
+  subtitle: "",
+  blocks: [EMPTY_BLOCK],
+  relatedIds: [],
 };
 
-export const EMPTY_UI: UiState = { tab: "articles" };
+export const EMPTY_EDIT: EditState = {
+  id: null,
+  baseline: "",
+  form: EMPTY_FORM,
+};
 
-export const DRAFT_KEY = "admin-draft-v2";
-export const UI_KEY = "admin-ui-v1";
+export const EMPTY_DRAFT: Draft = {
+  section: { name: "", slug: "", description: "" },
+  article: EMPTY_FORM,
+  edit: EMPTY_EDIT,
+};
+
+export const EMPTY_UI: UiState = { tab: "new" };
+
+export const DRAFT_KEY = "admin-draft-v4";
+export const UI_KEY = "admin-ui-v2";
+
+// ---------- Helpers ----------
+
+export function isDirty(d: Draft) {
+  const editing =
+    d.edit.id !== null && JSON.stringify(d.edit.form) !== d.edit.baseline;
+
+  return (
+    editing ||
+    JSON.stringify(d.section) !== JSON.stringify(EMPTY_DRAFT.section) ||
+    JSON.stringify(d.article) !== JSON.stringify(EMPTY_FORM)
+  );
+}
+
+export function formFromDto(dto: ArticleEditDto): ArticleForm {
+  return {
+    sectionSlug: dto.sectionSlug,
+    slug: dto.slug,
+    title: dto.title,
+    subtitle: dto.subtitle,
+    blocks: dto.blocks.length > 0 ? dto.blocks : [EMPTY_BLOCK],
+    relatedIds: dto.relatedIds,
+  };
+}
 
 // ---------- Styles ----------
 

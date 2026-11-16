@@ -4,14 +4,15 @@ import { isObjectIdOrHexString } from "mongoose";
 import { dbConnect } from "@/lib/db";
 import { checkWriteAccess, hasValidSession } from "@/lib/auth";
 import {
+  describeError,
   destroyImage,
   isCloudinaryUrl,
-  isOwnPublicId,
+  runCloudinaryChecks,
   signUpload,
 } from "@/lib/cloudinary";
 import { getMediaPage, isMediaInUse } from "@/lib/queries";
 import { Media } from "@/models/Media";
-import type { MediaItem, SavedMedia } from "@/lib/types";
+import type { DiagnosticStep, MediaItem, SavedMedia } from "@/lib/types";
 
 // ---------- Types and constants ----------
 
@@ -28,6 +29,12 @@ type MediaInput = {
 };
 
 const MAX_BATCH = 20;
+const SESSION_EXPIRED = "Sessione scaduta: effettua di nuovo l'accesso";
+
+function failure(context: string, e: unknown) {
+  console.error(`[media] ${context}`, e);
+  return { ok: false as const, error: `${context}: ${describeError(e)}` };
+}
 
 // ---------- Upload signature ----------
 
@@ -35,7 +42,11 @@ export async function getUploadSignature(password: string) {
   const denied = await checkWriteAccess(password);
   if (denied) return { ok: false as const, error: denied };
 
-  return { ok: true as const, ...signUpload() };
+  try {
+    return { ok: true as const, ...signUpload() };
+  } catch (e) {
+    return failure("Firma Cloudinary non generata", e);
+  }
 }
 
 // ---------- Gallery ----------
@@ -51,63 +62,73 @@ export async function saveMediaBatch(
     return { ok: false, error: "Elenco di immagini non valido" };
   }
 
-  const invalid = items.some(
-    (m) =>
-      !isCloudinaryUrl(m.url) ||
-      !isOwnPublicId(m.publicId) ||
-      !m.url.includes(m.publicId),
-  );
-  if (invalid) return { ok: false, error: "Immagine non valida" };
+  try {
+    for (const m of items) {
+      if (!isCloudinaryUrl(m.url)) {
+        return {
+          ok: false,
+          error: `L'URL non appartiene al tuo account Cloudinary (${m.url.slice(0, 70)})`,
+        };
+      }
+      if (!m.publicId || !m.url.includes(m.publicId)) {
+        return { ok: false, error: "L'ID dell'immagine non corrisponde al suo URL" };
+      }
+    }
 
-  await dbConnect();
+    await dbConnect();
 
-  await Media.bulkWrite(
-    items.map((m) => ({
-      updateOne: {
-        filter: { publicId: m.publicId },
-        update: {
-          $setOnInsert: {
-            url: m.url,
-            publicId: m.publicId,
-            originalName: (m.originalName ?? "").slice(0, 200),
-            width: Math.round(m.width),
-            height: Math.round(m.height),
-            format: m.format,
-            bytes: m.bytes,
-            createdAt: new Date(),
+    await Media.bulkWrite(
+      items.map((m) => ({
+        updateOne: {
+          filter: { publicId: m.publicId },
+          update: {
+            $setOnInsert: {
+              url: m.url,
+              publicId: m.publicId,
+              originalName: (m.originalName ?? "").slice(0, 200),
+              width: Math.round(m.width),
+              height: Math.round(m.height),
+              format: m.format,
+              bytes: m.bytes,
+              createdAt: new Date(),
+            },
           },
+          upsert: true,
         },
-        upsert: true,
-      },
-    })),
-  );
+      })),
+    );
 
-  const docs = await Media.find({
-    publicId: { $in: items.map((m) => m.publicId) },
-  })
-    .select("url publicId")
-    .sort({ _id: -1 })
-    .lean();
+    const docs = await Media.find({
+      publicId: { $in: items.map((m) => m.publicId) },
+    })
+      .select("url publicId")
+      .sort({ _id: -1 })
+      .lean();
 
-  return {
-    ok: true,
-    items: docs.map((d) => ({
-      id: String(d._id),
-      url: d.url,
-      publicId: d.publicId,
-    })),
-  };
+    return {
+      ok: true,
+      items: docs.map((d) => ({
+        id: String(d._id),
+        url: d.url,
+        publicId: d.publicId,
+      })),
+    };
+  } catch (e) {
+    return failure("Registrazione in galleria non riuscita", e);
+  }
 }
 
 export async function listMedia(
   cursor?: string,
 ): Promise<Result<{ items: MediaItem[]; nextCursor: string | null }>> {
-  if (!(await hasValidSession())) {
-    return { ok: false, error: "Sessione scaduta: effettua di nuovo l'accesso" };
-  }
+  if (!(await hasValidSession())) return { ok: false, error: SESSION_EXPIRED };
 
-  const page = await getMediaPage(cursor);
-  return { ok: true, ...page };
+  try {
+    const page = await getMediaPage(cursor);
+    return { ok: true, ...page };
+  } catch (e) {
+    return failure("Lettura della galleria non riuscita", e);
+  }
 }
 
 export async function deleteMedia(
@@ -121,28 +142,51 @@ export async function deleteMedia(
     return { ok: false, error: "Immagine non trovata" };
   }
 
-  await dbConnect();
-
-  const media = await Media.findById(id).lean();
-  if (!media) return { ok: false, error: "Immagine non trovata" };
-
-  if (await isMediaInUse(media.publicId)) {
-    return {
-      ok: false,
-      error: "L'immagine è usata in almeno un articolo: rimuovila da lì prima",
-    };
-  }
-
   try {
+    await dbConnect();
+
+    const media = await Media.findById(id).lean();
+    if (!media) return { ok: false, error: "Immagine non trovata" };
+
+    if (await isMediaInUse(media.publicId)) {
+      return {
+        ok: false,
+        error: "L'immagine è usata in almeno un articolo: rimuovila da lì prima",
+      };
+    }
+
     const done = await destroyImage(media.publicId);
     if (!done) {
       return { ok: false, error: "Cloudinary non ha confermato l'eliminazione" };
     }
-  } catch {
-    return { ok: false, error: "Errore di Cloudinary: riprova" };
+
+    await Media.deleteOne({ _id: media._id });
+    return { ok: true };
+  } catch (e) {
+    return failure("Eliminazione non riuscita", e);
+  }
+}
+
+// ---------- Diagnostics ----------
+
+export async function diagnoseCloudinary(): Promise<
+  Result<{ steps: DiagnosticStep[] }>
+> {
+  if (!(await hasValidSession())) return { ok: false, error: SESSION_EXPIRED };
+
+  const steps = await runCloudinaryChecks();
+
+  try {
+    await dbConnect();
+    const count = await Media.estimatedDocumentCount();
+    steps.push({
+      name: "Database",
+      ok: true,
+      detail: `Raggiungibile, ${count} immagini registrate`,
+    });
+  } catch (e) {
+    steps.push({ name: "Database", ok: false, detail: describeError(e) });
   }
 
-  await Media.deleteOne({ _id: media._id });
-
-  return { ok: true };
+  return { ok: true, steps };
 }

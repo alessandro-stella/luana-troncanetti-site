@@ -3,8 +3,8 @@
 import { useEffect } from "react";
 import type { MediaItem } from "@/lib/types";
 import MediaGrid from "./MediaGrid";
-import { useMediaList } from "./useMediaList";
-import { btnGhostCls } from "./shared";
+import { useMediaList } from "@/hooks//useMediaList";
+import { btnGhostCls } from "@/lib/admin/shared";
 
 type Props = {
   onPick: (item: MediaItem) => void;

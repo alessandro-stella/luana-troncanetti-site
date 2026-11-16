@@ -1,16 +1,26 @@
+// ---------- Layout ----------
+
+export type Align = "left" | "center" | "right" | "justify";
+
+export type ImagePosition = "top" | "middle" | "bottom";
+
 // ---------- Media ----------
 
 export type MediaItem = { id: string; url: string };
 
 export type SavedMedia = MediaItem & { publicId: string };
 
+export type DiagnosticStep = { name: string; ok: boolean; detail: string };
+
 // ---------- Articles ----------
 
 export type ArticleBlockDto = {
   subtitle: string;
   body: string;
+  align: Align;
   imageUrl: string;
   imageAlt: string;
+  imagePosition: ImagePosition;
 };
 
 export type ArticleEditDto = {
@@ -33,6 +43,7 @@ export type ArticleInputDto = {
   sections: {
     subtitle?: string;
     body: string;
-    image?: { url: string; alt?: string };
+    align?: Align;
+    image?: { url: string; alt?: string; position?: ImagePosition };
   }[];
 };

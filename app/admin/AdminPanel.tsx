@@ -3,8 +3,8 @@
 import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { logout } from "@/lib/actions";
-import { useSessionDraft } from "./useSessionDraft";
-import { usePendingFiles } from "./usePendingFiles";
+import { useSessionDraft } from "@/hooks/useSessionDraft";
+import { usePendingFiles } from "@/hooks/usePendingFiles";
 import SectionsTab from "./SectionsTab";
 import NewArticleTab from "./NewArticleTab";
 import GalleryTab from "./GalleryTab";
@@ -23,7 +23,7 @@ import {
   type SectionItem,
   type Tab,
   type UiState,
-} from "./shared";
+} from "@/lib/admin/shared";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "sections", label: "Sezioni" },
@@ -152,7 +152,9 @@ export default function AdminPanel({
 
   const panes: Record<Tab, ReactNode> = {
     sections: <SectionsTab {...tabProps} sections={sections} />,
-    new: <NewArticleTab {...tabProps} sections={sections} articles={articles} />,
+    new: (
+      <NewArticleTab {...tabProps} sections={sections} articles={articles} />
+    ),
     media: <GalleryTab password={password} />,
     edit: (
       <EditArticlesTab {...tabProps} sections={sections} articles={articles} />

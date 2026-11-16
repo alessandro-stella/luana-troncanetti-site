@@ -1,4 +1,5 @@
 import { Schema, model, models, type Model, type Types } from "mongoose";
+import type { Align, ImagePosition } from "@/lib/types";
 import "./SiteSection";
 
 // ---------- Types ----------
@@ -8,12 +9,14 @@ export interface IArticleImage {
   alt: string;
   width?: number;
   height?: number;
+  position?: ImagePosition;
 }
 
 export interface IArticleSection {
   _id?: Types.ObjectId;
   subtitle?: string;
   body: string;
+  align?: Align;
   image?: IArticleImage;
 }
 
@@ -38,6 +41,7 @@ const ImageSchema = new Schema<IArticleImage>(
     alt: { type: String, trim: true, default: "" },
     width: { type: Number, min: 1 },
     height: { type: Number, min: 1 },
+    position: { type: String, enum: ["top", "middle", "bottom"], default: "middle" },
   },
   { _id: false },
 );
@@ -47,6 +51,11 @@ const ArticleSectionSchema = new Schema<IArticleSection>({
   body: {
     type: String,
     required: [true, "Il testo della sezione è obbligatorio"],
+  },
+  align: {
+    type: String,
+    enum: ["left", "center", "right", "justify"],
+    default: "left",
   },
   image: { type: ImageSchema, required: false },
 });

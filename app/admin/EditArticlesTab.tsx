@@ -9,7 +9,7 @@ import {
   updateArticle,
 } from "@/lib/actions";
 import ArticleEditor from "./ArticleEditor";
-import { collectBlobUrls } from "./blobs";
+import { collectBlobUrls } from "@/lib/admin/blobs";
 import {
   EMPTY_EDIT,
   btnGhostCls,
@@ -20,7 +20,7 @@ import {
   type ArticleItem,
   type SectionItem,
   type TabProps,
-} from "./shared";
+} from "@/lib/admin/shared";
 
 type Props = TabProps & {
   sections: SectionItem[];
@@ -173,7 +173,9 @@ export default function EditArticlesTab({
       {articles.length === 0 ? (
         <p className="text-gray-500">Nessun articolo.</p>
       ) : visible.length === 0 ? (
-        <p className="text-gray-500">Nessun articolo corrisponde alla ricerca.</p>
+        <p className="text-gray-500">
+          Nessun articolo corrisponde alla ricerca.
+        </p>
       ) : (
         <ul className="divide-y border rounded">
           {visible.map((a) => (

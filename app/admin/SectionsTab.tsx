@@ -9,7 +9,7 @@ import {
   type Draft,
   type SectionItem,
   type TabProps,
-} from "./shared";
+} from "@/lib/admin/shared";
 
 type Props = TabProps & { sections: SectionItem[] };
 

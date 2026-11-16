@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { cacheLife, cacheTag } from "next/cache";
 import { getArticleBySectionAndSlug, getAllArticleParams } from "@/lib/queries";
+import { renderMarkdown } from "@/lib/markdown-server";
 import ArticleView from "@/components/ArticleView";
 
 export const instant = false;
@@ -52,12 +53,27 @@ export default async function ArticlePage({ params }: PageProps) {
     .filter((r) => r.status === "published" && r.section)
     .map((r) => ({ title: r.title, href: `/${r.section!.slug}/${r.slug}` }));
 
+  const blocks = article.sections.map((sec) => ({
+    subtitle: sec.subtitle,
+    html: renderMarkdown(sec.body),
+    align: sec.align,
+    image: sec.image
+      ? {
+          url: sec.image.url,
+          alt: sec.image.alt,
+          width: sec.image.width,
+          height: sec.image.height,
+          position: sec.image.position,
+        }
+      : undefined,
+  }));
+
   return (
     <div className="max-w-3xl mx-auto py-10">
       <ArticleView
         title={article.title}
         subtitle={article.subtitle}
-        blocks={article.sections}
+        blocks={blocks}
         related={related}
       />
     </div>

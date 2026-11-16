@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { ArticleEditDto } from "@/lib/types";
+import type { Align, ArticleEditDto, ImagePosition } from "@/lib/types";
 import type { PendingFiles } from "./usePendingFiles";
 
 // ---------- Types ----------
@@ -18,8 +18,10 @@ export type ArticleItem = {
 export type Block = {
   subtitle: string;
   body: string;
+  align: Align;
   imageUrl: string;
   imageAlt: string;
+  imagePosition: ImagePosition;
 };
 
 export type ArticleForm = {
@@ -68,8 +70,10 @@ export type TabProps = {
 export const EMPTY_BLOCK: Block = {
   subtitle: "",
   body: "",
+  align: "left",
   imageUrl: "",
   imageAlt: "",
+  imagePosition: "middle",
 };
 
 export const EMPTY_FORM: ArticleForm = {
@@ -95,7 +99,7 @@ export const EMPTY_DRAFT: Draft = {
 
 export const EMPTY_UI: UiState = { tab: "new" };
 
-export const DRAFT_KEY = "admin-draft-v4";
+export const DRAFT_KEY = "admin-draft-v5";
 export const UI_KEY = "admin-ui-v2";
 
 // ---------- Helpers ----------

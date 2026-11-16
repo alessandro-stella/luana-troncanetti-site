@@ -27,11 +27,13 @@ export type UploadOutcome =
 
 type Uploaded = { file: File; data: CloudinaryResponse };
 
+export type LogFn = (line: string) => void;
+
 // ---------- Validation ----------
 
 export function validateImageFile(file: File): string | null {
   if (!ACCEPT.split(",").includes(file.type)) {
-    return `${file.name}: formato non supportato`;
+    return `${file.name}: formato non supportato (${file.type || "tipo sconosciuto"})`;
   }
   if (file.size > MAX_FILE_BYTES) {
     return `${file.name}: supera i ${MAX_FILE_BYTES / 1024 / 1024} MB`;
@@ -44,6 +46,7 @@ export function validateImageFile(file: File): string | null {
 export async function uploadFiles(
   password: string,
   files: File[],
+  log: LogFn = () => {},
 ): Promise<
   { ok: true; outcomes: UploadOutcome[] } | { ok: false; error: string }
 > {
@@ -51,11 +54,19 @@ export async function uploadFiles(
     return { ok: false, error: `Massimo ${MAX_BATCH} immagini per volta` };
   }
 
+  log("Richiesta della firma al server…");
   const sig = await getUploadSignature(password);
-  if (!sig.ok) return sig;
+  if (!sig.ok) {
+    log(`ERRORE firma: ${sig.error}`);
+    return sig;
+  }
+  log(`Firma ottenuta · cloud «${sig.cloudName}» · cartella «${sig.folder}»`);
 
   const settled = await Promise.all(
     files.map(async (file): Promise<UploadOutcome | Uploaded> => {
+      const label = `${file.name} (${Math.max(1, Math.round(file.size / 1024))} KB, ${file.type})`;
+      log(`Upload di ${label}…`);
+
       try {
         const form = new FormData();
         form.append("file", file);
@@ -69,18 +80,20 @@ export async function uploadFiles(
           `https://api.cloudinary.com/v1_1/${sig.cloudName}/image/upload`,
           { method: "POST", body: form },
         );
-        const data = (await res.json()) as CloudinaryResponse;
+        const data = (await res.json().catch(() => null)) as CloudinaryResponse | null;
 
-        if (!res.ok) {
-          return {
-            file,
-            ok: false,
-            error: data.error?.message ?? "Upload fallito",
-          };
+        if (!res.ok || !data) {
+          const message = data?.error?.message ?? "risposta non valida";
+          log(`${file.name} → HTTP ${res.status} · ERRORE: ${message}`);
+          return { file, ok: false, error: `HTTP ${res.status}: ${message}` };
         }
+
+        log(`${file.name} → HTTP ${res.status} · OK · public_id «${data.public_id}»`);
         return { file, data };
-      } catch {
-        return { file, ok: false, error: "Errore di rete" };
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        log(`${file.name} → ERRORE di rete: ${message} (controlla la scheda Rete degli strumenti del browser)`);
+        return { file, ok: false, error: `Errore di rete: ${message}` };
       }
     }),
   );
@@ -101,15 +114,21 @@ export async function uploadFiles(
     bytes: data.bytes,
   }));
 
+  log(`Registrazione di ${payload.length} immagini in galleria…`);
   let saved = await saveMediaBatch(password, payload);
-  if (!saved.ok) saved = await saveMediaBatch(password, payload);
+  if (!saved.ok) {
+    log(`ERRORE registrazione: ${saved.error} · nuovo tentativo…`);
+    saved = await saveMediaBatch(password, payload);
+  }
 
   if (!saved.ok) {
+    log(`ERRORE registrazione: ${saved.error}`);
     return {
       ok: false,
-      error: `Immagini caricate ma non registrate in galleria (${saved.error}). Riprova.`,
+      error: `Immagini caricate su Cloudinary ma non registrate in galleria (${saved.error}).`,
     };
   }
+  log("Registrazione completata");
 
   const byPublicId = new Map(saved.items.map((m) => [m.publicId, m]));
 

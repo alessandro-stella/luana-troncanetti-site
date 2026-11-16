@@ -4,6 +4,7 @@
 
 import {
   useDeferredValue,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -11,25 +12,37 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import DOMPurify from "dompurify";
 import ArticleView from "@/components/ArticleView";
 import { thumbUrl, withTransform } from "@/lib/media-shared";
-import type { ArticleInputDto, MediaItem } from "@/lib/types";
-import MediaPickerModal from "./MediaPickerModal";
-import { ACCEPT, uploadPendingImages, validateImageFile } from "./upload";
-import { collectBlobUrls, isBlobUrl, stripDeadBlobs } from "./blobs";
+import type {
+  Align,
+  ArticleInputDto,
+  ImagePosition,
+  MediaItem,
+} from "@/lib/types";
+import MediaPickerModal from "@/components/admin/MediaPickerModal";
 import {
-  EMPTY_BLOCK,
+  ActionResult,
+  ArticleForm,
+  ArticleItem,
+  Block,
   btnCls,
   btnGhostCls,
+  EMPTY_BLOCK,
   inputCls,
-  type ActionResult,
-  type ArticleForm,
-  type ArticleItem,
-  type Block,
-  type SectionItem,
-  type TabProps,
-} from "./shared";
+  SectionItem,
+  TabProps,
+} from "@/lib/admin/shared";
+import {
+  ACCEPT,
+  uploadPendingImages,
+  validateImageFile,
+} from "@/lib/admin/upload";
+import { collectBlobUrls, isBlobUrl, stripDeadBlobs } from "@/lib/admin/blobs";
+import RadioRow from "@/components/admin/RadioRow";
+import RelatedPicker from "@/components/admin/RelatedPicker";
+import { renderPreview } from "@/lib/admin/previewMarkdown";
+import MarkdownField from "@/components/admin/MarkdownField";
 
 type Props = Pick<
   TabProps,
@@ -48,10 +61,18 @@ type Props = Pick<
   onSaved?: (saved: ArticleForm) => void;
 };
 
-type Target = { index: number; kind: "cover" | "body" };
+const ALIGN_OPTIONS: { value: Align; label: string }[] = [
+  { value: "left", label: "Sinistra" },
+  { value: "center", label: "Centro" },
+  { value: "right", label: "Destra" },
+  { value: "justify", label: "Giustificato" },
+];
 
-const PREVIEW_URI =
-  /^(?:(?:https?|blob|mailto|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+const POSITION_OPTIONS: { value: ImagePosition; label: string }[] = [
+  { value: "top", label: "Sopra il titolo" },
+  { value: "middle", label: "Tra titolo e testo" },
+  { value: "bottom", label: "Sotto il testo" },
+];
 
 function toInput(form: ArticleForm): ArticleInputDto {
   return {
@@ -63,8 +84,13 @@ function toInput(form: ArticleForm): ArticleInputDto {
     sections: form.blocks.map((b) => ({
       subtitle: b.subtitle.trim() || undefined,
       body: b.body,
+      align: b.align,
       image: b.imageUrl.trim()
-        ? { url: b.imageUrl.trim(), alt: b.imageAlt.trim() || undefined }
+        ? {
+            url: b.imageUrl.trim(),
+            alt: b.imageAlt.trim() || undefined,
+            position: b.imagePosition,
+          }
         : undefined,
     })),
   };
@@ -89,12 +115,12 @@ export default function ArticleEditor({
   files,
   run,
 }: Props) {
+  const uid = useId();
   const deferred = useDeferredValue(form);
 
-  const [picker, setPicker] = useState<Target | null>(null);
+  const [pickerIndex, setPickerIndex] = useState<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const fileTarget = useRef<Target | null>(null);
-  const bodyRefs = useRef<Array<HTMLTextAreaElement | null>>([]);
+  const fileIndex = useRef<number | null>(null);
 
   const linkable = useMemo(
     () => articles.filter((x) => x.id !== excludeId),
@@ -128,19 +154,8 @@ export default function ArticleEditor({
 
   // ---------- Images ----------
 
-  function insertIntoBody(index: number, html: string) {
-    const el = bodyRefs.current[index];
-    const current = form.blocks[index]?.body ?? "";
-    const start = el?.selectionStart ?? current.length;
-    const end = el?.selectionEnd ?? current.length;
-
-    setBlock(index, {
-      body: current.slice(0, start) + html + current.slice(end),
-    });
-  }
-
-  function chooseFile(target: Target) {
-    fileTarget.current = target;
+  function chooseFile(index: number) {
+    fileIndex.current = index;
     fileInput.current?.click();
   }
 
@@ -148,9 +163,9 @@ export default function ArticleEditor({
     const file = e.target.files?.[0];
     e.target.value = "";
 
-    const target = fileTarget.current;
-    fileTarget.current = null;
-    if (!file || !target) return;
+    const index = fileIndex.current;
+    fileIndex.current = null;
+    if (!file || index === null) return;
 
     const error = validateImageFile(file);
     if (error) {
@@ -158,24 +173,13 @@ export default function ArticleEditor({
       return;
     }
 
-    const url = files.add(file);
-    if (target.kind === "cover") {
-      setBlock(target.index, { imageUrl: url });
-    } else {
-      insertIntoBody(target.index, `<img src="${url}" alt="">`);
-    }
+    setBlock(index, { imageUrl: files.add(file) });
   }
 
   function pickFromGallery(media: MediaItem) {
-    const target = picker;
-    setPicker(null);
-    if (!target) return;
-
-    if (target.kind === "cover") {
-      setBlock(target.index, { imageUrl: media.url });
-    } else {
-      insertIntoBody(target.index, `<img src="${media.url}" alt="">`);
-    }
+    const index = pickerIndex;
+    setPickerIndex(null);
+    if (index !== null) setBlock(index, { imageUrl: media.url });
   }
 
   const deadBlobs = collectBlobUrls(form).filter((url) => !files.has(url));
@@ -190,13 +194,15 @@ export default function ArticleEditor({
       subtitle: deferred.subtitle,
       blocks: deferred.blocks.map((b) => ({
         subtitle: b.subtitle,
-        body: DOMPurify.sanitize(b.body, { ALLOWED_URI_REGEXP: PREVIEW_URI }),
+        html: renderPreview(b.body),
+        align: b.align,
         image: b.imageUrl.trim()
           ? {
               url: isBlobUrl(b.imageUrl)
                 ? b.imageUrl
                 : withTransform(b.imageUrl, "f_auto,q_auto,w_1200"),
               alt: b.imageAlt,
+              position: b.imagePosition,
             }
           : undefined,
       })),
@@ -319,58 +325,40 @@ export default function ArticleEditor({
 
                 <input
                   className={inputCls}
-                  placeholder="Sottotitolo del blocco (facoltativo)"
+                  placeholder="Titolo del blocco (facoltativo)"
                   value={b.subtitle}
                   onChange={(e) => setBlock(i, { subtitle: e.target.value })}
                 />
 
-                <textarea
-                  ref={(el) => {
-                    bodyRefs.current[i] = el;
-                  }}
-                  className={`${inputCls} font-mono`}
-                  rows={8}
-                  placeholder="Testo (HTML)"
+                <MarkdownField
                   value={b.body}
-                  onChange={(e) => setBlock(i, { body: e.target.value })}
+                  onChange={(body) => setBlock(i, { body })}
+                  rows={8}
+                  placeholder="Testo del blocco: seleziona una parte per formattarla"
                 />
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-gray-500">
-                    Immagine nel testo:
-                  </span>
-                  <button
-                    type="button"
-                    className={btnGhostCls}
-                    onClick={() => chooseFile({ index: i, kind: "body" })}
-                  >
-                    Carica dal computer
-                  </button>
-                  <button
-                    type="button"
-                    className={btnGhostCls}
-                    onClick={() => setPicker({ index: i, kind: "body" })}
-                  >
-                    Scegli dalla galleria
-                  </button>
-                </div>
+                <RadioRow
+                  legend="Allineamento del blocco"
+                  name={`${uid}-align-${i}`}
+                  value={b.align}
+                  options={ALIGN_OPTIONS}
+                  onChange={(align) => setBlock(i, { align })}
+                />
 
                 <div className="space-y-2 border-t pt-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-gray-500">
-                      Immagine del blocco:
-                    </span>
+                    <span className="text-xs text-gray-500">Immagine:</span>
                     <button
                       type="button"
                       className={btnGhostCls}
-                      onClick={() => chooseFile({ index: i, kind: "cover" })}
+                      onClick={() => chooseFile(i)}
                     >
                       Carica dal computer
                     </button>
                     <button
                       type="button"
                       className={btnGhostCls}
-                      onClick={() => setPicker({ index: i, kind: "cover" })}
+                      onClick={() => setPickerIndex(i)}
                     >
                       Scegli dalla galleria
                     </button>
@@ -388,28 +376,44 @@ export default function ArticleEditor({
                   </div>
 
                   {b.imageUrl && (
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={
-                          isBlobUrl(b.imageUrl) ? b.imageUrl : thumbUrl(b.imageUrl)
-                        }
-                        alt=""
-                        className="h-16 w-16 rounded object-cover"
-                      />
-                      <span className="text-xs text-gray-500">
-                        {isBlobUrl(b.imageUrl)
-                          ? "Dal computer: verrà caricata al salvataggio"
-                          : "Dalla galleria"}
-                      </span>
-                    </div>
-                  )}
+                    <>
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={
+                            isBlobUrl(b.imageUrl)
+                              ? b.imageUrl
+                              : thumbUrl(b.imageUrl)
+                          }
+                          alt=""
+                          className="h-16 w-16 rounded object-cover"
+                        />
+                        <span className="text-xs text-gray-500">
+                          {isBlobUrl(b.imageUrl)
+                            ? "Dal computer: verrà caricata al salvataggio"
+                            : "Dalla galleria"}
+                        </span>
+                      </div>
 
-                  <input
-                    className={inputCls}
-                    placeholder="Testo alternativo dell'immagine"
-                    value={b.imageAlt}
-                    onChange={(e) => setBlock(i, { imageAlt: e.target.value })}
-                  />
+                      <input
+                        className={inputCls}
+                        placeholder="Testo alternativo dell'immagine"
+                        value={b.imageAlt}
+                        onChange={(e) =>
+                          setBlock(i, { imageAlt: e.target.value })
+                        }
+                      />
+
+                      <RadioRow
+                        legend="Posizione dell'immagine"
+                        name={`${uid}-position-${i}`}
+                        value={b.imagePosition}
+                        options={POSITION_OPTIONS}
+                        onChange={(imagePosition) =>
+                          setBlock(i, { imagePosition })
+                        }
+                      />
+                    </>
+                  )}
                 </div>
 
                 {form.blocks.length > 1 && (
@@ -424,39 +428,12 @@ export default function ArticleEditor({
               </fieldset>
             ))}
 
-            <fieldset className="space-y-2 border rounded p-3">
-              <legend className="px-1 text-sm text-gray-500">Vedi anche</legend>
-              {linkable.length === 0 ? (
-                <p className="text-sm text-gray-500">
-                  Nessun articolo da collegare.
-                </p>
-              ) : (
-                <ul className="max-h-48 space-y-1 overflow-auto">
-                  {linkable.map((x) => (
-                    <li key={x.id}>
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={form.relatedIds.includes(x.id)}
-                          onChange={() => toggleRelated(x.id)}
-                        />
-                        <span>
-                          {x.title}{" "}
-                          <span className="text-gray-500">
-                            ({x.sectionName}
-                            {x.status !== "published" ? ", bozza" : ""})
-                          </span>
-                        </span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-xs text-gray-500">
-                Le bozze compaiono in Vedi anche solo dopo essere state
-                pubblicate.
-              </p>
-            </fieldset>
+            <RelatedPicker
+              articles={linkable}
+              sections={sections}
+              selected={form.relatedIds}
+              onToggle={toggleRelated}
+            />
 
             <div className="flex gap-3">
               <button type="button" onClick={addBlock} className={btnGhostCls}>
@@ -487,10 +464,10 @@ export default function ArticleEditor({
         </aside>
       </div>
 
-      {picker && (
+      {pickerIndex !== null && (
         <MediaPickerModal
           onPick={pickFromGallery}
-          onClose={() => setPicker(null)}
+          onClose={() => setPickerIndex(null)}
         />
       )}
     </div>

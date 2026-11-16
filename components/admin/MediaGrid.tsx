@@ -4,7 +4,7 @@
 
 import { thumbUrl } from "@/lib/media-shared";
 import type { MediaItem } from "@/lib/types";
-import { btnGhostCls } from "./shared";
+import { btnGhostCls } from "@/lib/admin/shared";
 
 type Props = {
   items: MediaItem[];

@@ -106,8 +106,10 @@ export async function getArticleForEdit(
     blocks: article.sections.map((s) => ({
       subtitle: s.subtitle ?? "",
       body: s.body,
+      align: s.align ?? "left",
       imageUrl: s.image?.url ?? "",
       imageAlt: s.image?.alt ?? "",
+      imagePosition: s.image?.position ?? "bottom",
     })),
   };
 }

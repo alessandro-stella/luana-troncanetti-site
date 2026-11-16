@@ -9,12 +9,11 @@ import {
   hasValidSession,
   loginWithPassword,
 } from "@/lib/auth";
-import { sanitizeBody } from "@/lib/sanitize";
 import { getArticleForEdit } from "@/lib/queries";
 import { Article } from "@/models/Article";
 import { Media } from "@/models/Media";
 import { SiteSection } from "@/models/SiteSection";
-import type { ArticleEditDto, ArticleInputDto } from "@/lib/types";
+import type { Align, ArticleEditDto, ArticleInputDto, ImagePosition } from "@/lib/types";
 
 // ---------- Types and constants ----------
 
@@ -29,7 +28,14 @@ type ResolvedSections =
       sections: {
         subtitle?: string;
         body: string;
-        image?: { url: string; alt: string; width: number; height: number };
+        align: Align;
+        image?: {
+          url: string;
+          alt: string;
+          width: number;
+          height: number;
+          position: ImagePosition;
+        };
       }[];
     }
   | { ok: false; error: string };
@@ -42,6 +48,9 @@ const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RESERVED_SLUGS = new Set(["admin", "api", "_next"]);
 const MAX_RELATED = 10;
 const MAX_SUBTITLE = 300;
+const MAX_BODY = 60_000;
+const ALIGNS = new Set<string>(["left", "center", "right", "justify"]);
+const POSITIONS = new Set<string>(["top", "middle", "bottom"]);
 
 function isDuplicateKey(e: unknown) {
   return (
@@ -170,6 +179,22 @@ function validate(input: ArticleInput): string | null {
   if (input.sections.some((s) => !s.body.trim())) {
     return "Ogni blocco deve avere un testo";
   }
+  if (input.sections.some((s) => s.body.length > MAX_BODY)) {
+    return `Ogni blocco può avere al massimo ${MAX_BODY} caratteri`;
+  }
+  if (input.sections.some((s) => /\bblob:https?:\/\//i.test(s.body))) {
+    return "Il testo contiene immagini locali non ancora caricate";
+  }
+  if (input.sections.some((s) => s.align && !ALIGNS.has(s.align))) {
+    return "Allineamento non valido";
+  }
+  if (
+    input.sections.some(
+      (s) => s.image?.position && !POSITIONS.has(s.image.position),
+    )
+  ) {
+    return "Posizione dell'immagine non valida";
+  }
   return null;
 }
 
@@ -202,7 +227,8 @@ async function resolveSections(
       const media = s.image ? byUrl.get(s.image.url) : undefined;
       return {
         subtitle: s.subtitle,
-        body: sanitizeBody(s.body),
+        body: s.body,
+        align: s.align ?? "left",
         image:
           s.image && media
             ? {
@@ -210,6 +236,7 @@ async function resolveSections(
                 alt: s.image.alt ?? "",
                 width: media.width,
                 height: media.height,
+                position: s.image.position ?? "middle",
               }
             : undefined,
       };
